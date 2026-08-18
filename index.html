@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+<title>Daily Ledger</title>
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Ledger" />
+<meta name="theme-color" content="#F3F1EA" />
+<link rel="apple-touch-icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%236D5AC0'/%3E%3Ctext x='50' y='68' font-size='58' text-anchor='middle' fill='%23F7F5EF' font-family='Georgia,serif'%3EL%3C/text%3E%3C/svg%3E" />
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #F3F1EA; }
+  #root { min-height: 100vh; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useMemo } = React;
+
+function Icon({ children, size = 16, color = "currentColor" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}
+      strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      {children}
+    </svg>
+  );
+}
+const Plus = (p) => <Icon {...p}><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></Icon>;
+const X = (p) => <Icon {...p}><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></Icon>;
+const Check = (p) => <Icon {...p}><polyline points="20 6 9 17 4 12"/></Icon>;
+const ChevronRight = (p) => <Icon {...p}><polyline points="9 18 15 12 9 6"/></Icon>;
+const ChevronLeft = (p) => <Icon {...p}><polyline points="15 18 9 12 15 6"/></Icon>;
+const Circle = (p) => <Icon {...p}><circle cx="12" cy="12" r="9"/></Icon>;
+const CircleDot = (p) => <Icon {...p}><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="1" fill={p.color || "currentColor"}/></Icon>;
+const CalendarDays = (p) => <Icon {...p}><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/></Icon>;
+
+
+const FONT_IMPORT_ID = "ledger-fonts";
+
+function useFonts() {
+  useEffect(() => {
+    if (document.getElementById(FONT_IMPORT_ID)) return;
+    const link = document.createElement("link");
+    link.id = FONT_IMPORT_ID;
+    link.rel = "stylesheet";
+    link.href =
+      "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600&display=swap";
+    document.head.appendChild(link);
+  }, []);
+}
+
+function todayKey() {
+  const d = new Date();
+  return d.toISOString().slice(0, 10);
+}
+
+function fmtDateLabel(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString(undefined, { weekday: "long", month: "short", day: "numeric" });
+}
+
+function fmtDateShort(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  return d.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
+}
+
+function shiftDate(dateStr, days) {
+  const d = new Date(dateStr + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return d.toISOString().slice(0, 10);
+}
+
+function monthKey(dateStr) {
+  return dateStr.slice(0, 7); // YYYY-MM
+}
+
+function monthLabel(monthStr) {
+  const d = new Date(monthStr + "-01T00:00:00");
+  return d.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+}
+
+function shiftMonth(monthStr, delta) {
+  const d = new Date(monthStr + "-01T00:00:00");
+  d.setMonth(d.getMonth() + delta);
+  return d.toISOString().slice(0, 7);
+}
+
+function daysInMonthGrid(monthStr) {
+  // returns array of { dateKey, inMonth } covering full weeks (Sun-Sat)
+  const first = new Date(monthStr + "-01T00:00:00");
+  const startDow = first.getDay();
+  const gridStart = new Date(first);
+  gridStart.setDate(first.getDate() - startDow);
+  const cells = [];
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(gridStart);
+    d.setDate(gridStart.getDate() + i);
+    cells.push({
+      dateKey: d.toISOString().slice(0, 10),
+      inMonth: d.getMonth() === first.getMonth(),
+    });
+  }
+  return cells;
+}
+
+function uid() {
+  return Math.random().toString(36).slice(2, 10);
+}
+
+const STORAGE_PREFIX = "daily-ledger:";
+
+async function storeGet(key, fallback) {
+  try {
+    const raw = localStorage.getItem(STORAGE_PREFIX + key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+async function storeSet(key, value) {
+  try {
+    localStorage.setItem(STORAGE_PREFIX + key, JSON.stringify(value));
+  } catch (e) {
+    console.error("storage set failed", e);
+  }
+}
+
+const TABS = [
+  { id: "today", label: "Day" },
+  { id: "week", label: "Projects" },
+  { id: "lot", label: "Parking Lot" },
+  { id: "history", label: "History" },
+];
+
+function DailyLedger() {
+  useFonts();
+
+  const [ready, setReady] = useState(false);
+  const [tab, setTab] = useState("today");
+  const [projects, setProjects] = useState([]);
+  const [quickTasks, setQuickTasks] = useState([]);
+  const [daily, setDaily] = useState({}); // { [dateKey]: { important, importantDone, blocks: [{id,time,text,type,done}] } }
+  const [selectedDate, setSelectedDate] = useState(todayKey());
+  const [calendarOpen, setCalendarOpen] = useState(false);
+  const dateKey = selectedDate;
+  const isToday = dateKey === todayKey();
+
+  useEffect(() => {
+    (async () => {
+      const [p, q, d] = await Promise.all([
+        storeGet("projects", []),
+        storeGet("quickTasks", []),
+        storeGet("daily", {}),
+      ]);
+      setProjects(p);
+      setQuickTasks(q);
+      setDaily(d);
+      setReady(true);
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (ready) storeSet("projects", projects);
+  }, [projects, ready]);
+
+  useEffect(() => {
+    if (ready) storeSet("quickTasks", quickTasks);
+  }, [quickTasks, ready]);
+
+  useEffect(() => {
+    if (ready) storeSet("daily", daily);
+  }, [daily, ready]);
+
+  const today = daily[dateKey] || { important: "", importantDone: false, blocks: [] };
+
+  const setToday = useCallback(
+    (updater) => {
+      setDaily((prev) => {
+        const cur = prev[dateKey] || { important: "", importantDone: false, blocks: [] };
+        const next = typeof updater === "function" ? updater(cur) : updater;
+        return { ...prev, [dateKey]: next };
+      });
+    },
+    [dateKey]
+  );
+
+  if (!ready) {
+    return (
+      <div style={styles.loadingWrap}>
+        <div style={styles.loadingText}>opening ledger…</div>
+      </div>
+    );
+  }
+
+  return (
+    <div style={styles.app}>
+      <style>{globalCss}</style>
+      <Header
+        dateKey={dateKey}
+        isToday={isToday}
+        onPrev={() => setSelectedDate((d) => shiftDate(d, -1))}
+        onNext={() => setSelectedDate((d) => shiftDate(d, 1))}
+        onToday={() => setSelectedDate(todayKey())}
+        onToggleCalendar={() => setCalendarOpen((v) => !v)}
+        calendarOpen={calendarOpen}
+      />
+      {calendarOpen && (
+        <CalendarPicker
+          selectedDate={selectedDate}
+          daily={daily}
+          onPick={(d) => {
+            setSelectedDate(d);
+            setCalendarOpen(false);
+            setTab("today");
+          }}
+        />
+      )}
+      <div style={styles.tabRow}>
+        {TABS.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            style={{
+              ...styles.tabBtn,
+              ...(tab === t.id ? styles.tabBtnActive : {}),
+            }}
+          >
+            {t.label}
+          </button>
+        ))}
+      </div>
+
+      <div style={styles.content}>
+        {tab === "today" && (
+          <TodayView
+            today={today}
+            setToday={setToday}
+            projects={projects}
+            quickTasks={quickTasks}
+            setQuickTasks={setQuickTasks}
+            isToday={isToday}
+          />
+        )}
+        {tab === "week" && <ProjectsView projects={projects} setProjects={setProjects} />}
+        {tab === "lot" && <ParkingLotView quickTasks={quickTasks} setQuickTasks={setQuickTasks} />}
+        {tab === "history" && (
+          <HistoryView
+            daily={daily}
+            onOpenDate={(d) => {
+              setSelectedDate(d);
+              setTab("today");
+            }}
+          />
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Header({ dateKey, isToday, onPrev, onNext, onToday, onToggleCalendar, calendarOpen }) {
+  return (
+    <div style={styles.header}>
+      <div style={styles.headerTopRow}>
+        <div style={styles.headerEyebrow}>THE LEDGER</div>
+        <button
+          onClick={onToggleCalendar}
+          style={{ ...styles.calendarToggleBtn, ...(calendarOpen ? styles.calendarToggleBtnActive : {}) }}
+        >
+          <CalendarDays size={15} color={calendarOpen ? "#F7F5EF" : "#6D5AC0"} />
+        </button>
+      </div>
+      <div style={styles.headerDateRow}>
+        <button onClick={onPrev} style={styles.dateNavBtn}>
+          <ChevronLeft size={18} color="#9C9484" />
+        </button>
+        <div style={{ flex: 1, textAlign: "center" }}>
+          <div style={styles.headerDate}>{fmtDateLabel(dateKey)}</div>
+          {!isToday && (
+            <button onClick={onToday} style={styles.backToTodayBtn}>
+              back to today
+            </button>
+          )}
+        </div>
+        <button onClick={onNext} style={styles.dateNavBtn}>
+          <ChevronRight size={18} color="#9C9484" />
+        </button>
+      </div>
+      <div style={styles.headerRule} />
+    </div>
+  );
+}
+
+function CalendarPicker({ selectedDate, daily, onPick }) {
+  const [month, setMonth] = useState(monthKey(selectedDate));
+  const cells = useMemo(() => daysInMonthGrid(month), [month]);
+  const today = todayKey();
+  const dow = ["S", "M", "T", "W", "T", "F", "S"];
+
+  const hasData = (dateKey) => {
+    const day = daily[dateKey];
+    if (!day) return false;
+    return !!day.important || (day.blocks && day.blocks.length > 0);
+  };
+
+  return (
+    <div style={styles.calendarPanel}>
+      <div style={styles.calendarHeaderRow}>
+        <button onClick={() => setMonth((m) => shiftMonth(m, -1))} style={styles.calNavBtn}>
+          <ChevronLeft size={15} color="#9C9484" />
+        </button>
+        <div style={styles.calendarMonthLabel}>{monthLabel(month)}</div>
+        <button onClick={() => setMonth((m) => shiftMonth(m, 1))} style={styles.calNavBtn}>
+          <ChevronRight size={15} color="#9C9484" />
+        </button>
+      </div>
+      <div style={styles.calendarDowRow}>
+        {dow.map((d, i) => (
+          <div key={i} style={styles.calendarDowCell}>
+            {d}
+          </div>
+        ))}
+      </div>
+      <div style={styles.calendarGrid}>
+        {cells.map((c) => {
+          const isSelected = c.dateKey === selectedDate;
+          const isToday = c.dateKey === today;
+          const day = c.dateKey.slice(8, 10);
+          return (
+            <button
+              key={c.dateKey}
+              onClick={() => onPick(c.dateKey)}
+              style={{
+                ...styles.calendarCell,
+                opacity: c.inMonth ? 1 : 0.3,
+                background: isSelected ? "#6D5AC0" : "transparent",
+                color: isSelected ? "#F7F5EF" : isToday ? "#6D5AC0" : "#2A2620",
+                fontWeight: isToday || isSelected ? 700 : 400,
+              }}
+            >
+              {parseInt(day, 10)}
+              {hasData(c.dateKey) && !isSelected && <div style={styles.calendarDot} />}
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function HistoryView({ daily, onOpenDate }) {
+  const dates = Object.keys(daily)
+    .filter((d) => {
+      const day = daily[d];
+      return day && (day.important || (day.blocks && day.blocks.length > 0));
+    })
+    .sort((a, b) => (a < b ? 1 : -1));
+
+  return (
+    <div>
+      <SectionLabel text="Past Days" />
+      {dates.length === 0 && (
+        <div style={styles.emptyHint}>Nothing logged yet. Once you plan a day, it'll show up here.</div>
+      )}
+      {dates.map((d) => {
+        const day = daily[d];
+        const total = day.blocks ? day.blocks.length : 0;
+        const done = day.blocks ? day.blocks.filter((b) => b.done).length : 0;
+        return (
+          <button key={d} style={styles.historyRow} onClick={() => onOpenDate(d)}>
+            <div style={styles.historyDate}>{fmtDateShort(d)}</div>
+            <div style={{ flex: 1, textAlign: "left" }}>
+              {day.important && (
+                <div
+                  style={{
+                    ...styles.historyImportant,
+                    textDecoration: day.importantDone ? "line-through" : "none",
+                    opacity: day.importantDone ? 0.5 : 1,
+                  }}
+                >
+                  {day.important}
+                </div>
+              )}
+              {total > 0 && (
+                <div style={styles.historyCount}>
+                  {done}/{total} blocks done
+                </div>
+              )}
+            </div>
+            <ChevronRight size={15} color="#C9C2B2" />
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function TodayView({ today, setToday, projects, quickTasks, setQuickTasks }) {
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [customImportant, setCustomImportant] = useState("");
+  const [newBlockTime, setNewBlockTime] = useState("");
+  const [newBlockText, setNewBlockText] = useState("");
+  const [newBlockType, setNewBlockType] = useState("project");
+
+  const addBlock = () => {
+    if (!newBlockText.trim()) return;
+    const block = {
+      id: uid(),
+      time: newBlockTime.trim(),
+      text: newBlockText.trim(),
+      type: newBlockType,
+      done: false,
+    };
+    setToday((cur) => ({ ...cur, blocks: [...cur.blocks, block] }));
+    setNewBlockTime("");
+    setNewBlockText("");
+  };
+
+  const toggleBlock = (id) => {
+    setToday((cur) => ({
+      ...cur,
+      blocks: cur.blocks.map((b) => (b.id === id ? { ...b, done: !b.done } : b)),
+    }));
+  };
+
+  const removeBlock = (id) => {
+    setToday((cur) => ({ ...cur, blocks: cur.blocks.filter((b) => b.id !== id) }));
+  };
+
+  const setImportant = (text) => {
+    setToday((cur) => ({ ...cur, important: text, importantDone: false }));
+    setPickerOpen(false);
+  };
+
+  return (
+    <div>
+      {/* Important Thing */}
+      <SectionLabel text="The One Important Thing" />
+      {today.important ? (
+        <div style={styles.importantCard}>
+          <button
+            onClick={() => setToday((cur) => ({ ...cur, importantDone: !cur.importantDone }))}
+            style={styles.checkCircleBtn}
+          >
+            {today.importantDone ? (
+              <Check size={16} color="#F7F5EF" />
+            ) : (
+              <Circle size={16} color="#6D5AC0" />
+            )}
+          </button>
+          <div
+            style={{
+              ...styles.importantText,
+              textDecoration: today.importantDone ? "line-through" : "none",
+              opacity: today.importantDone ? 0.5 : 1,
+            }}
+          >
+            {today.important}
+          </div>
+          <button onClick={() => setToday((cur) => ({ ...cur, important: "", importantDone: false }))} style={styles.iconBtn}>
+            <X size={15} color="#9C9484" />
+          </button>
+        </div>
+      ) : (
+        <button style={styles.pickImportantBtn} onClick={() => setPickerOpen(true)}>
+          <Plus size={15} /> Choose today's important thing
+        </button>
+      )}
+
+      {pickerOpen && (
+        <div style={styles.pickerPanel}>
+          <div style={styles.pickerTitle}>Pull from a project's next action</div>
+          {projects.length === 0 && (
+            <div style={styles.emptyHint}>No projects yet — add one in the Projects tab.</div>
+          )}
+          {projects.map((p) => (
+            <button key={p.id} style={styles.pickerRow} onClick={() => setImportant(p.nextAction || p.name)}>
+              <span style={styles.pickerRowProject}>{p.name}</span>
+              <span style={styles.pickerRowAction}>{p.nextAction || "(no next action set)"}</span>
+            </button>
+          ))}
+          <div style={styles.pickerCustomRow}>
+            <input
+              value={customImportant}
+              onChange={(e) => setCustomImportant(e.target.value)}
+              placeholder="…or type your own"
+              style={styles.textInput}
+            />
+            <button
+              style={styles.smallAddBtn}
+              onClick={() => customImportant.trim() && setImportant(customImportant.trim())}
+            >
+              Set
+            </button>
+          </div>
+          <button style={styles.cancelLink} onClick={() => setPickerOpen(false)}>
+            cancel
+          </button>
+        </div>
+      )}
+
+      {/* Schedule */}
+      <SectionLabel text="Today's Blocks" style={{ marginTop: 28 }} />
+      <div style={styles.timeline}>
+        {today.blocks.length === 0 && (
+          <div style={styles.emptyHint}>No blocks yet. Add your important thing first, then fill in the rest.</div>
+        )}
+        {today.blocks.map((b) => (
+          <div key={b.id} style={styles.timelineRow}>
+            <div style={styles.timelineTime}>{b.time || "—"}</div>
+            <div
+              style={{
+                ...styles.timelineBar,
+                background: b.type === "project" ? "#6D5AC0" : "#4C7A5E",
+              }}
+            />
+            <button onClick={() => toggleBlock(b.id)} style={styles.timelineCheck}>
+              {b.done ? <Check size={13} color="#6D5AC0" /> : <CircleDot size={13} color="#C9C2B2" />}
+            </button>
+            <div
+              style={{
+                ...styles.timelineText,
+                textDecoration: b.done ? "line-through" : "none",
+                opacity: b.done ? 0.45 : 1,
+              }}
+            >
+              {b.text}
+            </div>
+            <button onClick={() => removeBlock(b.id)} style={styles.iconBtn}>
+              <X size={13} color="#C9C2B2" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div style={styles.addBlockRow}>
+        <input
+          value={newBlockTime}
+          onChange={(e) => setNewBlockTime(e.target.value)}
+          placeholder="9:00"
+          style={{ ...styles.textInput, width: 64, fontFamily: "'IBM Plex Mono', monospace", fontSize: 13 }}
+        />
+        <input
+          value={newBlockText}
+          onChange={(e) => setNewBlockText(e.target.value)}
+          placeholder="Add a block…"
+          style={{ ...styles.textInput, flex: 1 }}
+          onKeyDown={(e) => e.key === "Enter" && addBlock()}
+        />
+        <div style={styles.typeToggle}>
+          <button
+            onClick={() => setNewBlockType("project")}
+            style={{
+              ...styles.typeToggleBtn,
+              background: newBlockType === "project" ? "#6D5AC0" : "transparent",
+              color: newBlockType === "project" ? "#F7F5EF" : "#6D5AC0",
+            }}
+          >
+            proj
+          </button>
+          <button
+            onClick={() => setNewBlockType("quick")}
+            style={{
+              ...styles.typeToggleBtn,
+              background: newBlockType === "quick" ? "#4C7A5E" : "transparent",
+              color: newBlockType === "quick" ? "#F7F5EF" : "#4C7A5E",
+            }}
+          >
+            quick
+          </button>
+        </div>
+        <button onClick={addBlock} style={styles.smallAddBtn}>
+          <Plus size={15} />
+        </button>
+      </div>
+
+      {/* Quick tasks bank preview */}
+      <SectionLabel text="From the parking lot" style={{ marginTop: 28 }} />
+      <div style={styles.lotPreview}>
+        {quickTasks.filter((t) => !t.done).length === 0 && (
+          <div style={styles.emptyHint}>Parking lot is empty.</div>
+        )}
+        {quickTasks
+          .filter((t) => !t.done)
+          .slice(0, 5)
+          .map((t) => (
+            <button
+              key={t.id}
+              style={styles.lotChip}
+              onClick={() =>
+                setToday((cur) => ({
+                  ...cur,
+                  blocks: [
+                    ...cur.blocks,
+                    { id: uid(), time: "", text: t.text, type: "quick", done: false },
+                  ],
+                }))
+              }
+            >
+              <Plus size={11} /> {t.text}
+            </button>
+          ))}
+      </div>
+    </div>
+  );
+}
+
+function ProjectsView({ projects, setProjects }) {
+  const [open, setOpen] = useState(null); // id of expanded project, or "new"
+  const [draft, setDraft] = useState({ name: "", goal: "", nextAction: "", deadline: "" });
+
+  const startNew = () => {
+    setDraft({ name: "", goal: "", nextAction: "", deadline: "" });
+    setOpen("new");
+  };
+
+  const startEdit = (p) => {
+    setDraft(p);
+    setOpen(p.id);
+  };
+
+  const save = () => {
+    if (!draft.name.trim()) return;
+    if (open === "new") {
+      setProjects((prev) => [...prev, { ...draft, id: uid() }]);
+    } else {
+      setProjects((prev) => prev.map((p) => (p.id === open ? { ...draft } : p)));
+    }
+    setOpen(null);
+  };
+
+  const remove = (id) => {
+    setProjects((prev) => prev.filter((p) => p.id !== id));
+    setOpen(null);
+  };
+
+  return (
+    <div>
+      <SectionLabel text="Active Projects" />
+      <div style={styles.emptyHint}>
+        Anything that takes more than one sitting lives here. Keep the next action concrete — a literal first step, not a category.
+      </div>
+
+      {projects.map((p) => (
+        <div key={p.id} style={styles.projectCard}>
+          {open === p.id ? (
+            <ProjectForm draft={draft} setDraft={setDraft} onSave={save} onCancel={() => setOpen(null)} onDelete={() => remove(p.id)} isNew={false} />
+          ) : (
+            <button style={styles.projectRow} onClick={() => startEdit(p)}>
+              <div style={styles.projectBar} />
+              <div style={{ flex: 1, textAlign: "left" }}>
+                <div style={styles.projectName}>{p.name}</div>
+                <div style={styles.projectNext}>{p.nextAction || "no next action set"}</div>
+                {p.deadline && <div style={styles.projectDeadline}>due {p.deadline}</div>}
+              </div>
+              <ChevronRight size={16} color="#C9C2B2" />
+            </button>
+          )}
+        </div>
+      ))}
+
+      {open === "new" ? (
+        <div style={styles.projectCard}>
+          <ProjectForm draft={draft} setDraft={setDraft} onSave={save} onCancel={() => setOpen(null)} isNew />
+        </div>
+      ) : (
+        <button style={styles.addProjectBtn} onClick={startNew}>
+          <Plus size={15} /> New project
+        </button>
+      )}
+    </div>
+  );
+}
+
+function ProjectForm({ draft, setDraft, onSave, onCancel, onDelete, isNew }) {
+  return (
+    <div style={{ padding: 14 }}>
+      <input
+        value={draft.name}
+        onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+        placeholder="Project name"
+        style={{ ...styles.textInput, fontFamily: "'Fraunces', serif", fontSize: 16, marginBottom: 8 }}
+      />
+      <input
+        value={draft.goal}
+        onChange={(e) => setDraft({ ...draft, goal: e.target.value })}
+        placeholder="This week's goal"
+        style={{ ...styles.textInput, marginBottom: 8 }}
+      />
+      <input
+        value={draft.nextAction}
+        onChange={(e) => setDraft({ ...draft, nextAction: e.target.value })}
+        placeholder="Next concrete action"
+        style={{ ...styles.textInput, marginBottom: 8 }}
+      />
+      <input
+        value={draft.deadline}
+        onChange={(e) => setDraft({ ...draft, deadline: e.target.value })}
+        placeholder="Deadline (e.g. Fri EOD)"
+        style={{ ...styles.textInput, marginBottom: 12 }}
+      />
+      <div style={{ display: "flex", gap: 8 }}>
+        <button style={styles.saveBtn} onClick={onSave}>
+          Save
+        </button>
+        <button style={styles.cancelBtnSmall} onClick={onCancel}>
+          Cancel
+        </button>
+        {!isNew && (
+          <button style={styles.deleteBtnSmall} onClick={onDelete}>
+            Delete
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function ParkingLotView({ quickTasks, setQuickTasks }) {
+  const [text, setText] = useState("");
+
+  const add = () => {
+    if (!text.trim()) return;
+    setQuickTasks((prev) => [...prev, { id: uid(), text: text.trim(), done: false }]);
+    setText("");
+  };
+
+  const toggle = (id) => {
+    setQuickTasks((prev) => prev.map((t) => (t.id === id ? { ...t, done: !t.done } : t)));
+  };
+
+  const remove = (id) => {
+    setQuickTasks((prev) => prev.filter((t) => t.id !== id));
+  };
+
+  const pending = quickTasks.filter((t) => !t.done);
+  const done = quickTasks.filter((t) => t.done);
+
+  return (
+    <div>
+      <SectionLabel text="Quick Tasks" />
+      <div style={styles.emptyHint}>Dump easy, single-sitting items here. Capture now, schedule later.</div>
+
+      <div style={styles.addBlockRow}>
+        <input
+          value={text}
+          onChange={(e) => setText(e.target.value)}
+          placeholder="Add a quick task…"
+          style={{ ...styles.textInput, flex: 1 }}
+          onKeyDown={(e) => e.key === "Enter" && add()}
+        />
+        <button onClick={add} style={styles.smallAddBtn}>
+          <Plus size={15} />
+        </button>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        {pending.length === 0 && <div style={styles.emptyHint}>Nothing pending.</div>}
+        {pending.map((t) => (
+          <div key={t.id} style={styles.lotRow}>
+            <button onClick={() => toggle(t.id)} style={styles.checkCircleBtnSmall}>
+              <Circle size={14} color="#4C7A5E" />
+            </button>
+            <div style={styles.lotRowText}>{t.text}</div>
+            <button onClick={() => remove(t.id)} style={styles.iconBtn}>
+              <X size={13} color="#C9C2B2" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {done.length > 0 && (
+        <>
+          <SectionLabel text="Done" style={{ marginTop: 20 }} />
+          {done.map((t) => (
+            <div key={t.id} style={{ ...styles.lotRow, opacity: 0.45 }}>
+              <button onClick={() => toggle(t.id)} style={styles.checkCircleBtnSmall}>
+                <Check size={14} color="#4C7A5E" />
+              </button>
+              <div style={{ ...styles.lotRowText, textDecoration: "line-through" }}>{t.text}</div>
+              <button onClick={() => remove(t.id)} style={styles.iconBtn}>
+                <X size={13} color="#C9C2B2" />
+              </button>
+            </div>
+          ))}
+        </>
+      )}
+    </div>
+  );
+}
+
+function SectionLabel({ text, style }) {
+  return (
+    <div style={{ ...styles.sectionLabel, ...style }}>
+      <span>{text}</span>
+      <div style={styles.sectionLabelRule} />
+    </div>
+  );
+}
+
+const globalCss = `
+  * { box-sizing: border-box; }
+  input:focus { outline: 2px solid #6D5AC0; outline-offset: 1px; }
+  button:focus-visible { outline: 2px solid #6D5AC0; outline-offset: 1px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+`;
+
+const styles = {
+  app: {
+    minHeight: "100vh",
+    background: "#F3F1EA",
+    fontFamily: "'Inter', sans-serif",
+    color: "#2A2620",
+    maxWidth: 480,
+    margin: "0 auto",
+    paddingBottom: 40,
+  },
+  loadingWrap: {
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#F3F1EA",
+    fontFamily: "'IBM Plex Mono', monospace",
+    color: "#9C9484",
+    fontSize: 13,
+  },
+  loadingText: { letterSpacing: "0.05em" },
+  header: { padding: "28px 20px 0" },
+  headerTopRow: { display: "flex", alignItems: "center", justifyContent: "space-between" },
+  headerEyebrow: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 11,
+    letterSpacing: "0.18em",
+    color: "#6D5AC0",
+  },
+  calendarToggleBtn: {
+    width: 30,
+    height: 30,
+    borderRadius: "50%",
+    border: "1px solid #DCD6C6",
+    background: "#FFFFFF",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+  },
+  calendarToggleBtnActive: { background: "#6D5AC0", border: "1px solid #6D5AC0" },
+  headerDateRow: { display: "flex", alignItems: "center", marginTop: 8 },
+  dateNavBtn: {
+    background: "none",
+    border: "none",
+    padding: 6,
+    display: "flex",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  headerDate: {
+    fontFamily: "'Fraunces', serif",
+    fontSize: 24,
+    fontWeight: 600,
+    color: "#2A2620",
+    lineHeight: 1.1,
+  },
+  backToTodayBtn: {
+    background: "none",
+    border: "none",
+    color: "#6D5AC0",
+    fontSize: 11,
+    fontFamily: "'IBM Plex Mono', monospace",
+    textDecoration: "underline",
+    cursor: "pointer",
+    marginTop: 4,
+    padding: 0,
+  },
+  headerRule: { height: 1, background: "#DCD6C6", marginTop: 16 },
+  calendarPanel: {
+    margin: "10px 20px 0",
+    background: "#FFFFFF",
+    border: "1px solid #E4DFD1",
+    borderRadius: 8,
+    padding: 12,
+  },
+  calendarHeaderRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 8,
+  },
+  calNavBtn: { background: "none", border: "none", padding: 4, cursor: "pointer", display: "flex" },
+  calendarMonthLabel: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 12,
+    letterSpacing: "0.04em",
+    color: "#2A2620",
+  },
+  calendarDowRow: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", marginBottom: 2 },
+  calendarDowCell: {
+    textAlign: "center",
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 10,
+    color: "#9C9484",
+    padding: "4px 0",
+  },
+  calendarGrid: { display: "grid", gridTemplateColumns: "repeat(7, 1fr)", gap: 2 },
+  calendarCell: {
+    position: "relative",
+    aspectRatio: "1",
+    border: "none",
+    borderRadius: 6,
+    background: "transparent",
+    fontSize: 12.5,
+    fontFamily: "'Inter', sans-serif",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  calendarDot: {
+    position: "absolute",
+    bottom: 3,
+    width: 4,
+    height: 4,
+    borderRadius: "50%",
+    background: "#4C7A5E",
+  },
+  historyRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 12,
+    width: "100%",
+    background: "#FFFFFF",
+    border: "1px solid #E4DFD1",
+    borderRadius: 6,
+    padding: "12px 12px",
+    marginBottom: 8,
+    cursor: "pointer",
+  },
+  historyDate: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 11,
+    color: "#9C9484",
+    width: 72,
+    flexShrink: 0,
+    textAlign: "left",
+    lineHeight: 1.3,
+  },
+  historyImportant: { fontFamily: "'Fraunces', serif", fontSize: 14.5, fontWeight: 600 },
+  historyCount: { fontSize: 11.5, color: "#736C5C", marginTop: 3 },
+  tabRow: { display: "flex", padding: "0 20px", marginTop: 4 },
+  tabBtn: {
+    flex: 1,
+    padding: "12px 4px",
+    background: "none",
+    border: "none",
+    borderBottom: "2px solid transparent",
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 12,
+    letterSpacing: "0.04em",
+    color: "#9C9484",
+    cursor: "pointer",
+  },
+  tabBtnActive: { color: "#2A2620", borderBottom: "2px solid #6D5AC0" },
+  content: { padding: "20px 20px 0" },
+  sectionLabel: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 11,
+    letterSpacing: "0.1em",
+    textTransform: "uppercase",
+    color: "#9C9484",
+    marginBottom: 12,
+  },
+  sectionLabelRule: { flex: 1, height: 1, background: "#DCD6C6" },
+  emptyHint: {
+    fontSize: 13,
+    color: "#9C9484",
+    lineHeight: 1.5,
+    marginBottom: 14,
+  },
+  importantCard: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    background: "#FFFFFF",
+    border: "1px solid #E4DFD1",
+    borderLeft: "4px solid #6D5AC0",
+    borderRadius: 6,
+    padding: "14px 12px",
+  },
+  checkCircleBtn: {
+    width: 22,
+    height: 22,
+    borderRadius: "50%",
+    border: "1.5px solid #6D5AC0",
+    background: "transparent",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  checkCircleBtnSmall: {
+    width: 20,
+    height: 20,
+    borderRadius: "50%",
+    border: "1.5px solid #4C7A5E",
+    background: "transparent",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  importantText: {
+    flex: 1,
+    fontFamily: "'Fraunces', serif",
+    fontSize: 16,
+    fontWeight: 600,
+    lineHeight: 1.3,
+  },
+  iconBtn: { background: "none", border: "none", cursor: "pointer", padding: 4, display: "flex" },
+  pickImportantBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    width: "100%",
+    padding: "13px 12px",
+    background: "transparent",
+    border: "1.5px dashed #C9C2B2",
+    borderRadius: 6,
+    color: "#6D5AC0",
+    fontFamily: "'Inter', sans-serif",
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: "pointer",
+  },
+  pickerPanel: {
+    marginTop: 10,
+    background: "#FFFFFF",
+    border: "1px solid #E4DFD1",
+    borderRadius: 6,
+    padding: 12,
+  },
+  pickerTitle: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 11,
+    color: "#9C9484",
+    marginBottom: 8,
+    letterSpacing: "0.04em",
+  },
+  pickerRow: {
+    display: "flex",
+    flexDirection: "column",
+    width: "100%",
+    textAlign: "left",
+    background: "#F8F6F0",
+    border: "none",
+    borderRadius: 4,
+    padding: "8px 10px",
+    marginBottom: 6,
+    cursor: "pointer",
+  },
+  pickerRowProject: { fontSize: 12, fontWeight: 600, color: "#6D5AC0" },
+  pickerRowAction: { fontSize: 13, color: "#2A2620", marginTop: 2 },
+  pickerCustomRow: { display: "flex", gap: 6, marginTop: 8 },
+  cancelLink: {
+    background: "none",
+    border: "none",
+    color: "#9C9484",
+    fontSize: 12,
+    marginTop: 8,
+    cursor: "pointer",
+    textDecoration: "underline",
+  },
+  textInput: {
+    width: "100%",
+    padding: "9px 10px",
+    border: "1px solid #DCD6C6",
+    borderRadius: 4,
+    fontFamily: "'Inter', sans-serif",
+    fontSize: 14,
+    background: "#FFFFFF",
+    color: "#2A2620",
+  },
+  smallAddBtn: {
+    width: 36,
+    height: 36,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    background: "#6D5AC0",
+    color: "#F7F5EF",
+    border: "none",
+    borderRadius: 4,
+    cursor: "pointer",
+    flexShrink: 0,
+  },
+  timeline: { marginTop: 4 },
+  timelineRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "8px 0",
+    borderBottom: "1px solid #E9E4D8",
+  },
+  timelineTime: {
+    width: 44,
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 11,
+    color: "#9C9484",
+    flexShrink: 0,
+  },
+  timelineBar: { width: 3, height: 22, borderRadius: 2, flexShrink: 0 },
+  timelineCheck: { background: "none", border: "none", cursor: "pointer", display: "flex", flexShrink: 0 },
+  timelineText: { flex: 1, fontSize: 14, lineHeight: 1.3 },
+  addBlockRow: { display: "flex", gap: 6, marginTop: 12, alignItems: "center" },
+  typeToggle: {
+    display: "flex",
+    border: "1px solid #DCD6C6",
+    borderRadius: 4,
+    overflow: "hidden",
+    flexShrink: 0,
+  },
+  typeToggleBtn: {
+    padding: "9px 8px",
+    fontSize: 10,
+    fontFamily: "'IBM Plex Mono', monospace",
+    border: "none",
+    cursor: "pointer",
+  },
+  lotPreview: { display: "flex", flexWrap: "wrap", gap: 8 },
+  lotChip: {
+    display: "flex",
+    alignItems: "center",
+    gap: 5,
+    padding: "7px 10px",
+    background: "#EDEAE0",
+    border: "1px solid #DCD6C6",
+    borderRadius: 20,
+    fontSize: 12,
+    color: "#4C7A5E",
+    cursor: "pointer",
+  },
+  projectCard: {
+    background: "#FFFFFF",
+    border: "1px solid #E4DFD1",
+    borderRadius: 6,
+    marginBottom: 10,
+    overflow: "hidden",
+  },
+  projectRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    width: "100%",
+    background: "none",
+    border: "none",
+    padding: "14px 12px",
+    cursor: "pointer",
+  },
+  projectBar: { width: 4, alignSelf: "stretch", background: "#6D5AC0", borderRadius: 2, flexShrink: 0 },
+  projectName: { fontFamily: "'Fraunces', serif", fontSize: 16, fontWeight: 600 },
+  projectNext: { fontSize: 12.5, color: "#736C5C", marginTop: 2 },
+  projectDeadline: {
+    fontFamily: "'IBM Plex Mono', monospace",
+    fontSize: 10.5,
+    color: "#9C9484",
+    marginTop: 4,
+  },
+  addProjectBtn: {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    width: "100%",
+    padding: "13px 12px",
+    background: "transparent",
+    border: "1.5px dashed #C9C2B2",
+    borderRadius: 6,
+    color: "#6D5AC0",
+    fontFamily: "'Inter', sans-serif",
+    fontSize: 14,
+    fontWeight: 500,
+    cursor: "pointer",
+  },
+  saveBtn: {
+    padding: "9px 16px",
+    background: "#6D5AC0",
+    color: "#F7F5EF",
+    border: "none",
+    borderRadius: 4,
+    fontSize: 13,
+    fontWeight: 600,
+    cursor: "pointer",
+  },
+  cancelBtnSmall: {
+    padding: "9px 14px",
+    background: "transparent",
+    color: "#9C9484",
+    border: "1px solid #DCD6C6",
+    borderRadius: 4,
+    fontSize: 13,
+    cursor: "pointer",
+  },
+  deleteBtnSmall: {
+    padding: "9px 14px",
+    background: "transparent",
+    color: "#B8544A",
+    border: "1px solid #EAD4D1",
+    borderRadius: 4,
+    fontSize: 13,
+    cursor: "pointer",
+    marginLeft: "auto",
+  },
+  lotRow: {
+    display: "flex",
+    alignItems: "center",
+    gap: 10,
+    padding: "10px 0",
+    borderBottom: "1px solid #E9E4D8",
+  },
+  lotRowText: { flex: 1, fontSize: 14 },
+};
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<DailyLedger />);
+
+</script>
+</body>
+</html>
